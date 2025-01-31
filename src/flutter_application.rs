@@ -93,18 +93,18 @@ unsafe impl Send for SendFlutterPlatformMessageResponseHandle {}
 pub type FlutterApplicationCallback =
     Box<dyn FnOnce(&mut FlutterApplication) -> bool + 'static + Send>;
 
-struct FlutterApplicationUserData {
+struct FlutterApplicationUserData<'window> {
     event_loop_proxy: Mutex<EventLoopProxy<FlutterApplicationCallback>>,
     instance: Arc<Instance>,
     runtime: Arc<Runtime>,
     device: Device,
-    surface: Surface,
+    surface: Surface<'window>,
     queue: Queue,
     main_thread: ThreadId,
     render_task_runner: TaskRunner,
 }
 
-pub struct FlutterApplication {
+pub struct FlutterApplication<'window> {
     engine: FlutterEngine,
     compositor: Compositor,
     instance: Arc<Instance>,
@@ -114,25 +114,25 @@ pub struct FlutterApplication {
     runtime: Arc<Runtime>,
     clipboard: Arc<Mutex<Clipboard>>,
     keyboard: Keyboard,
-    window: Arc<Window>,
+    window: &'window Window,
     platform_views_handler: PlatformViewsHandler,
-    user_data: Box<FlutterApplicationUserData>,
+    user_data: Box<FlutterApplicationUserData<'window>>,
     set_cursor_icon: Box<dyn Fn(Option<CursorIcon>) + 'static>,
 }
 
-impl FlutterApplication {
+impl<'window> FlutterApplication<'window> {
     pub fn new(
         runtime: Arc<Runtime>,
         asset_bundle_path: &Path,
         flutter_flags: Vec<String>,
-        surface: Surface,
+        surface: Surface<'window>,
         instance: Arc<Instance>,
         device: Device,
         queue: Queue,
         event_loop_proxy: EventLoopProxy<FlutterApplicationCallback>,
-        window: Arc<Window>,
+        window: &'window Window,
         set_cursor_icon: impl Fn(Option<CursorIcon>) + 'static,
-    ) -> FlutterApplication {
+    ) -> Self {
         if !flutter_asset_bundle_is_valid(asset_bundle_path) {
             panic!("Flutter asset bundle was not valid.");
         }
@@ -253,6 +253,7 @@ impl FlutterApplication {
             runs_task_on_current_thread_callback: Some(Self::runs_task_on_current_thread_callback),
             post_task_callback: Some(Self::post_task_callback),
             identifier: 0,
+            destruction_callback: None, // TODO: Handle this
         };
         let render_task_runner = FlutterTaskRunnerDescription {
             struct_size: size_of::<FlutterTaskRunnerDescription>() as _,
@@ -262,6 +263,7 @@ impl FlutterApplication {
             ),
             post_task_callback: Some(TaskRunner::post_task_callback),
             identifier: 2,
+            destruction_callback: None, // TODO: Handle this
         };
         let custom_task_runners = FlutterCustomTaskRunners {
             struct_size: size_of::<FlutterCustomTaskRunners>() as _,
@@ -294,7 +296,7 @@ impl FlutterApplication {
 
         Self::unwrap_result(unsafe {
             FlutterEngineInitialize(
-                FLUTTER_ENGINE_VERSION.into(),
+                FLUTTER_ENGINE_VERSION as _,
                 &config as _,
                 &args as _,
                 &*instance.user_data as *const _ as _,
@@ -338,6 +340,9 @@ impl FlutterApplication {
                     physical_view_inset_right: 0.0,
                     physical_view_inset_bottom: 0.0,
                     physical_view_inset_left: 0.0,
+                    // TODO: fighure out what these do (display_id and view_id)
+                    display_id: 0,
+                    view_id: 0,
                 };
                 log::debug!("setting metrics to {metrics:?}");
                 Self::unwrap_result(unsafe {
@@ -375,6 +380,10 @@ impl FlutterApplication {
             MouseButton::Right => 2,
             MouseButton::Middle => 4,
             MouseButton::Other(x) => 1 << x,
+            _ => {
+                log::warn!("Unhandled mouse event {:?}", button);
+                return;
+            }
         };
         match state {
             ElementState::Pressed => mouse.held_buttons ^= button_idx,
@@ -464,7 +473,7 @@ impl FlutterApplication {
             let event = FlutterPointerEvent {
                 struct_size: size_of::<FlutterPointerEvent>() as _,
                 phase,
-                timestamp: Self::current_time(),
+                timestamp: Self::current_time() as _,
                 x: mouse.position.x,
                 y: mouse.position.y,
                 device: mouse.virtual_id,
@@ -481,6 +490,9 @@ impl FlutterApplication {
                 pan_y: 0.0,
                 scale: 1.0,
                 rotation: 0.0,
+
+                // TODO: figure out view_id
+                view_id: 0,
             };
             self.user_data
                 .event_loop_proxy
@@ -804,7 +816,7 @@ impl FlutterApplication {
     }
 }
 
-impl Drop for FlutterApplication {
+impl<'a> Drop for FlutterApplication<'a> {
     fn drop(&mut self) {
         Self::unwrap_result(unsafe { FlutterEngineShutdown(self.engine) });
         for &aot_data in &self.aot_data {

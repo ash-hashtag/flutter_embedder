@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-#![feature(once_cell, result_option_inspect)]
+// #![feature(once_cell, result_option_inspect)]
 use std::{path::PathBuf, sync::Arc};
 
 use clap::Parser;
@@ -11,8 +11,8 @@ use wgpu::{
 use winit::{
     dpi::PhysicalPosition,
     event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
-    window::{Window, WindowBuilder},
+    event_loop::{ControlFlow, EventLoop},
+    window::{Window, WindowAttributes},
 };
 
 mod flutter_application;
@@ -48,20 +48,60 @@ fn main() -> Result<(), std::io::Error> {
     let args = Args::parse();
 
     let event_loop: EventLoop<FlutterApplicationCallback> =
-        EventLoopBuilder::with_user_event().build();
-    let window = WindowBuilder::new()
-        .with_title("Flutter Embedder")
-        // .with_inner_size(PhysicalSize::new(1024, 768))
-        .build(&event_loop)
-        .unwrap();
-    // window.set_outer_position(PhysicalPosition::new(100, 100));
+        EventLoop::<FlutterApplicationCallback>::with_user_event()
+            .build()
+            .unwrap();
+
+    let window_attr = WindowAttributes::default().with_title("Flutter Embedder");
+
+    #[cfg(any(x11_platform, wayland_platform))]
+    if let Some(token) = event_loop.read_token_from_env() {
+        startup_notify::reset_activation_token_env();
+        info!("Using token {:?} to activate a window", token);
+        window_attributes = window_attributes.with_activation_token(token);
+    }
+
+    #[cfg(x11_platform)]
+    match std::env::var("X11_VISUAL_ID") {
+        Ok(visual_id_str) => {
+            info!("Using X11 visual id {visual_id_str}");
+            let visual_id = visual_id_str.parse()?;
+            window_attributes = window_attributes.with_x11_visual(visual_id);
+        }
+        Err(_) => info!("Set the X11_VISUAL_ID env variable to request specific X11 visual"),
+    }
+
+    #[cfg(x11_platform)]
+    match std::env::var("X11_SCREEN_ID") {
+        Ok(screen_id_str) => {
+            info!("Placing the window on X11 screen {screen_id_str}");
+            let screen_id = screen_id_str.parse()?;
+            window_attributes = window_attributes.with_x11_screen(screen_id);
+        }
+        Err(_) => {
+            info!("Set the X11_SCREEN_ID env variable to place the window on non-default screen")
+        }
+    }
+
+    log::info!("Creating window with attributes {:?}", window_attr);
+
+    let window = event_loop.create_window(window_attr).unwrap();
 
     let rt = Arc::new(Builder::new_multi_thread().build()?);
     let inner_rt = rt.clone();
 
-    rt.block_on(async move {
-        let instance = Instance::new(Backends::VULKAN);
-        let surface = unsafe { instance.create_surface(&window) };
+    let instance = Instance::new(&wgpu::InstanceDescriptor {
+        backends: Backends::VULKAN,
+        ..Default::default()
+    });
+
+    for adapter in instance.enumerate_adapters(Backends::VULKAN) {
+        log::info!("Found Adapter: {:?} ", adapter.get_info(),);
+    }
+
+    let surface = instance.create_surface(&window).unwrap();
+
+    rt.block_on(async {
         let adapter = instance
             .request_adapter(&RequestAdapterOptions {
                 power_preference: PowerPreference::default(),
@@ -75,8 +115,9 @@ fn main() -> Result<(), std::io::Error> {
             .request_device(
                 &DeviceDescriptor {
                     label: None,
-                    features: Features::CLEAR_TEXTURE,
-                    limits: Limits::downlevel_defaults(),
+                    required_features: Features::CLEAR_TEXTURE,
+                    required_limits: Limits::downlevel_defaults(),
+                    memory_hints: wgpu::MemoryHints::Performance,
                 },
                 None,
             )
@@ -85,11 +126,9 @@ fn main() -> Result<(), std::io::Error> {
 
         let size = window.inner_size();
 
-        log::debug!(
-            "Supported formats: {:?}",
-            surface.get_supported_formats(&adapter)
-        );
-        let formats = surface.get_supported_formats(&adapter);
+        let capabilites = surface.get_capabilities(&adapter);
+        log::debug!("Supported formats: {:?}", capabilites.formats);
+        let formats = capabilites.formats;
         let format = formats
             .into_iter()
             .find(|&format| format == TextureFormat::Bgra8Unorm)
@@ -103,11 +142,11 @@ fn main() -> Result<(), std::io::Error> {
                 width: size.width,
                 height: size.height,
                 present_mode: PresentMode::Fifo,
+                desired_maximum_frame_latency: 2,
+                alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                view_formats: Vec::new(),
             },
         );
-
-        let window = Arc::new(window);
-        let inner_window = window.clone();
 
         let mut app = FlutterApplication::new(
             inner_rt,
@@ -118,16 +157,19 @@ fn main() -> Result<(), std::io::Error> {
             device,
             queue,
             event_loop.create_proxy(),
-            window.clone(),
-            move |cursor| {
-                if let Some(cursor) = cursor {
-                    inner_window.set_cursor_visible(true);
-                    inner_window.set_cursor_icon(cursor);
-                } else {
-                    inner_window.set_cursor_visible(false);
-                }
+            &window,
+            |cursor| {
+                // if let Some(cursor) = cursor {
+                //     window.set_cursor_visible(true);
+                //     window.set_cursor_icon(cursor);
+                // } else {
+                //     window.set_cursor_visible(false);
+                // }
+                // // TODO: pass window somehow
             },
         );
+
+        log::info!("Created Flutter App, and running it...");
 
         app.run();
 
@@ -135,22 +177,26 @@ fn main() -> Result<(), std::io::Error> {
         // size of the window.
         metrics_changed(&app, &window);
 
-        event_loop.run(move |event, _, control_flow| {
-            let _ = &adapter;
+        let _ = event_loop.run(|event, active_event_loop| {
+            // let _ = &adapter;
+            // active_event_loop.set_control_flow(ControlFlow::Wait);
 
-            *control_flow = ControlFlow::Wait;
+            // *control_flow = ControlFlow::Wait;
             match event {
                 Event::UserEvent(handler) => {
                     if handler(&mut app) {
-                        *control_flow = ControlFlow::Exit;
+                        active_event_loop.exit();
+                        // *control_flow = ControlFlow::Exit;
                     }
                 }
-                Event::RedrawRequested(_window_id) => {
-                    app.schedule_frame();
-                }
+
+                // Event::RedrawRequested(_window_id) => {
+                //     app.schedule_frame();
+                // }
                 Event::WindowEvent { event, .. } => match event {
                     WindowEvent::CloseRequested => {
-                        *control_flow = ControlFlow::Exit;
+                        // *control_flow = ControlFlow::Exit;
+                        active_event_loop.exit();
                     }
                     WindowEvent::Moved(_)
                     | WindowEvent::Resized(_)
@@ -187,7 +233,7 @@ fn main() -> Result<(), std::io::Error> {
                         app.mouse_wheel(device_id, delta, phase);
                     }
                     WindowEvent::ModifiersChanged(state) => {
-                        app.modifiers_changed(state);
+                        app.modifiers_changed(state.state());
                     }
                     WindowEvent::KeyboardInput {
                         event,
@@ -199,6 +245,10 @@ fn main() -> Result<(), std::io::Error> {
                     WindowEvent::Focused(focused) => {
                         app.focused(focused);
                     }
+
+                    WindowEvent::RedrawRequested => {
+                        app.schedule_frame();
+                    }
                     _ => {}
                 },
                 _ => {}
@@ -209,6 +259,8 @@ fn main() -> Result<(), std::io::Error> {
 }
 
 fn metrics_changed(application: &FlutterApplication, window: &Window) {
+    log::info!("Metrics Changed");
+
     let size = window.inner_size();
     let position = window
         .inner_position()

@@ -1,8 +1,8 @@
+use ash::vk::Handle;
 use std::{cell::Cell, ffi::c_void, mem::size_of, ptr::null_mut};
 
-use ash::vk::Handle;
 use wgpu::{
-    CommandEncoderDescriptor, Extent3d, ImageCopyTextureBase, Origin3d, Texture, TextureAspect,
+    CommandEncoderDescriptor, Extent3d, Origin3d, TexelCopyTextureInfo, Texture, TextureAspect,
     TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
 };
 use wgpu_hal::api::Vulkan;
@@ -10,7 +10,7 @@ use wgpu_hal::api::Vulkan;
 use crate::{
     flutter_application::FlutterApplication,
     flutter_bindings::{
-        size_t, FlutterBackingStore, FlutterBackingStoreConfig,
+        FlutterBackingStore, FlutterBackingStoreConfig,
         FlutterBackingStoreType_kFlutterBackingStoreTypeVulkan, FlutterBackingStore__bindgen_ty_1,
         FlutterCompositor, FlutterLayer,
         FlutterLayerContentType_kFlutterLayerContentTypeBackingStore,
@@ -40,6 +40,7 @@ impl Compositor {
             collect_backing_store_callback: Some(Self::backing_store_collect_callback),
             present_layers_callback: Some(Self::present_layers_callback),
             avoid_backing_store_cache: false,
+            present_view_callback: None,
         }
     }
 
@@ -68,12 +69,14 @@ impl Compositor {
                 usage: TextureUsages::COPY_SRC
                     | TextureUsages::RENDER_ATTACHMENT
                     | TextureUsages::TEXTURE_BINDING,
+                view_formats: &[TextureFormat::Bgra8Unorm],
             });
 
         let mut image = None;
         unsafe {
-            texture.as_hal::<Vulkan, _>(|texture| {
+            texture.as_hal::<Vulkan, _, _>(|texture| {
                 let texture = texture.unwrap();
+
                 image = Some(FlutterVulkanImage {
                     struct_size: size_of::<FlutterVulkanImage>() as _,
                     image: texture.raw_handle().as_raw() as _,
@@ -83,7 +86,7 @@ impl Compositor {
         }
         let image = image.unwrap();
         let user_data = Box::new((texture, image));
-        let mut backing_store = unsafe { &mut *backing_store_out as &mut FlutterBackingStore };
+        let backing_store = unsafe { &mut *backing_store_out as &mut FlutterBackingStore };
         backing_store.user_data = null_mut();
         backing_store.type_ = FlutterBackingStoreType_kFlutterBackingStoreTypeVulkan;
         backing_store.did_update = true;
@@ -104,7 +107,7 @@ impl Compositor {
     }
     extern "C" fn present_layers_callback(
         layers: *mut *const FlutterLayer,
-        layers_count: size_t,
+        layers_count: usize,
         user_data: *mut c_void,
     ) -> bool {
         let application_user_data = unsafe { &*(user_data as *const FlutterApplicationUserData) };
@@ -155,13 +158,13 @@ impl Compositor {
                         let texture = unsafe { &*(backing_store.user_data as *mut Texture) };
 
                         encoder.copy_texture_to_texture(
-                            ImageCopyTextureBase {
+                            TexelCopyTextureInfo {
                                 texture,
                                 mip_level: 0,
                                 origin: Origin3d::ZERO,
                                 aspect: TextureAspect::All,
                             },
-                            ImageCopyTextureBase {
+                            TexelCopyTextureInfo {
                                 texture: &frame.texture,
                                 mip_level: 0,
                                 origin: Origin3d {
