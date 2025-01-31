@@ -2,6 +2,22 @@
 
 In a nutshell, this is a project about integrating Flutter with wgpu.
 
+
+## How to use
+
+
+```
+  # create bundle within your project
+  flutter build bundle
+
+  export LD_PRELOAD=<path-to-libflutter_engine.so>
+  cargo run -- <path-to-flutter-project>/build/flutter_assets
+
+``` 
+
+
+
+
 ## Flutter
 
 [Flutter](https://flutter.dev/) is a UI framework written by Google for mobile platforms that supports running on Android, iOS, macOS, Windows, Linux, Fuchsia and Web. It tries to get unified visualization and behavior of its UI by ignoring all of the built-in native UI and doing everything itself, with only a thin interface layer to the OS necessary.
@@ -11,6 +27,8 @@ For this, it can use a range of rendering APIs, namely OpenGL, Metal, Vulkan and
 On the application developer side, it uses Dart, a language developed by Google that can be compiled to machine code and JavaScript. The web variant uses the latter, while all other platforms use the former.
 
 Flutter is based on defining the UI in a declarative style similar to React.
+
+
 
 ## Rust
 
