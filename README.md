@@ -11,6 +11,8 @@ In a nutshell, this is a project about integrating Flutter with wgpu.
   flutter build bundle
 
   export LD_PRELOAD=<path-to-libflutter_engine.so>
+  export LIBRARY_PATH=<path-to-libflutter_engine.so-directory>
+
   cargo run -- <path-to-flutter-project>/build/flutter_assets
 
 ``` 
